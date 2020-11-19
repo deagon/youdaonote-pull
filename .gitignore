@@ -1,4 +1,5 @@
 .idea/
 *.iml
 cookies.json
+config.json
 youdaonote/
