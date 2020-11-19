@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from datetime import datetime
+
 import requests
 import sys
 import time
@@ -22,6 +24,8 @@ __github__ = 'https//github.com/DeppWang/youdaonote-pull'
 def timestamp() -> str:
     return str(int(time.time() * 1000))
 
+def timestamp_to_datetime_str(ts) -> str:
+    return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
 
 def check_config(config_name) -> dict:
     """ 检查 config.json 文件格式 """
@@ -298,6 +302,8 @@ class YoudaoNoteSession(requests.Session):
         """ 判断是新增还是更新 """
 
         name = self.optimize_name(name)
+        create_ts = file_entry['createTimeForSort']
+        create_time = timestamp_to_datetime_str(create_ts)
 
         youdao_file_suffix = os.path.splitext(name)[1]  # 笔记后缀
         local_file_path = os.path.join(local_dir, name).replace('\\', '/')  # 用于将后缀 .note 转换为 .md
@@ -315,7 +321,7 @@ class YoudaoNoteSession(requests.Session):
         # 如果不存在，则下载
         if not os.path.exists(local_file_path):
             try:
-                self.get_file(id, original_file_path, youdao_file_suffix)
+                self.get_file(id, original_file_path, youdao_file_suffix, name, create_time)
                 print('新增「%s」%s' % (local_file_path, tip))
             except Exception as error:
                 print('「%s」转换为 Markdown 失败！请检查文件！' % original_file_path)
@@ -336,7 +342,7 @@ class YoudaoNoteSession(requests.Session):
                 # 考虑到使用 f.write() 直接覆盖原文件，在 Windows 下报错（WinError 183），先将其删除
                 if os.path.exists(local_file_path):
                     os.remove(local_file_path)
-                self.get_file(id, original_file_path, youdao_file_suffix)
+                self.get_file(id, original_file_path, youdao_file_suffix, name, create_time)
                 print('更新「%s」%s' % (local_file_path, tip))
             except Exception as error:
                 print('「%s」转换为 Markdown 失败！请检查文件！' % original_file_path)
@@ -349,8 +355,15 @@ class YoudaoNoteSession(requests.Session):
         name = regex.sub('_', name)
         return name
 
-    def get_file(self, file_id, file_path, youdao_file_suffix) -> None:
+    def get_file(self, file_id, file_path, youdao_file_suffix, file_name, create_time) -> None:
         """ 下载文件。先不管什么类型文件，均下载。如果是 .note 类型，转换为 Markdown """
+        content_header = """
+---
+title: %s
+date: %s
+tags:
+---
+        """ % (file_name, create_time)
 
         data = {
             'fileId': file_id,
@@ -371,25 +384,27 @@ class YoudaoNoteSession(requests.Session):
             content = response.content.decode('utf-8')
 
             content = self.covert_markdown_file_image_url(content, file_path)
+            content = content_header + content
             try:
                 with open(file_path, 'wb') as f:
                     f.write(content.encode())
             except UnicodeEncodeError as err:
                 print('错误提示：%s' % format(err))
-            return
-
-        with open(file_path, 'wb') as f:
-            f.write(response.content)  # response.content 本身就是字节类型
-
         # 如果文件是 .note 类型，将其转换为 MarkDown 类型
-        if youdao_file_suffix == '.note':
+        elif youdao_file_suffix == '.note':
+            # response.content 本身就是字节类型
+            content = response.content
+            with open(file_path, 'wb') as f:
+                f.write(content)
             try:
-                self.covert_xml_to_markdown(file_path)
+                self.covert_xml_to_markdown(file_path, content_header)
             except ET.ParseError:
                 print('此 note 笔记应该为 17 年以前新建，格式为 html，将转换为 Markdown...')
-                self.covert_html_to_markdown(file_path)
+                self.covert_html_to_markdown(file_path, content_header)
+        else:
+            print('未知的文件类型: %s', youdao_file_suffix)
 
-    def covert_xml_to_markdown(self, file_path) -> None:
+    def covert_xml_to_markdown(self, file_path, content_header) -> None:
         """ 转换 xml 为 Markdown """
 
         # 如果文件为 null，结束
@@ -527,20 +542,21 @@ class YoudaoNoteSession(requests.Session):
                             text = ''
                         new_content += f'%s{nl}{nl}' % text
 
-        self.write_content(file_path, new_content)
+        self.write_content(file_path, new_content, content_header)
 
-    def covert_html_to_markdown(self, file_path):
+    def covert_html_to_markdown(self, file_path, content_header):
         with open(file_path, 'rb') as f:
             content_str = f.read().decode('utf-8')
         new_content = md(content_str)
-        self.write_content(file_path, new_content)
+        self.write_content(file_path, new_content, content_header)
 
-    def write_content(self, file_path, new_content):
+    def write_content(self, file_path, new_content, content_header):
         " File is **.note，new_content is markdown string "
 
         base = os.path.splitext(file_path)[0]
         new_file_path = base + '.md'
         os.rename(file_path, new_file_path)
+        new_content = content_header + new_content
         with open(new_file_path, 'wb') as f:
             f.write(new_content.encode())
 
